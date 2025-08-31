@@ -1,2 +1,3 @@
 # lab-experimentacao-02
-Repositório para armazenar as soluções desenvolvidas para o laboratório 02 de experimentação de software.
+
+Alunos: João Vitor Romero Sales e Lucas Randazzo
