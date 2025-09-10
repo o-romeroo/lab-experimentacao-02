@@ -12,6 +12,13 @@ load_dotenv()
 
 token = os.getenv("GITHUB_TOKEN")
 
+# Project-relative paths with environment-variable overrides for portability
+BASE_DIR = Path(__file__).resolve().parent
+CK_JAR = Path(os.getenv("CK_JAR", BASE_DIR / "ck" / "target" / "ck-0.7.1-SNAPSHOT-jar-with-dependencies.jar"))
+REPOSITORIES_DIR = Path(os.getenv("REPOSITORIES_DIR", BASE_DIR / "repositories"))
+RESULTS_DIR = Path(os.getenv("RESULTS_DIR", BASE_DIR / "results"))
+DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
+
 def get_popular_repositories_java(num_repos):
     """
     Retorna os repositórios Java mais populares do GitHub, ordenados por número de estrelas.
@@ -170,22 +177,25 @@ def collect_and_save_repo_info(repos):
         })
         time.sleep(3)
     df = pd.DataFrame(rows)
-    df.to_excel("data/repository_data.xlsx", index=False)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = DATA_DIR / "repository_data.xlsx"
+    df.to_excel(out_path, index=False)
     
 def run_ck_on_repo(repo_name):
-    ck_jar = Path(r"C:\Users\Lucas\Desktop\lab-experimentacao-02\ck\target\ck-0.7.1-SNAPSHOT-jar-with-dependencies.jar")
-    repo_dir = Path(fr"C:\Users\Lucas\Desktop\lab-experimentacao-02\repositories\{repo_name}")
-    out_dir = Path(r"C:\Users\Lucas\Desktop\lab-experimentacao-02\results")
-
+    repo_dir = REPOSITORIES_DIR / repo_name
+    out_dir = RESULTS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if not CK_JAR.exists():
+        raise FileNotFoundError(f"CK jar not found at {CK_JAR}. Set CK_JAR environment variable to the jar location.")
+
     cmd = [
-            "java", "-Xmx4g", "-jar", str(ck_jar),
-            str(repo_dir),
-            "true",  
-            "true",  
-            str(out_dir)
-        ]
+        "java", "-Xmx4g", "-jar", str(CK_JAR),
+        str(repo_dir),
+        "true",
+        "true",
+        str(out_dir)
+    ]
 
     subprocess.check_call(cmd, cwd=str(repo_dir.parent))
     
@@ -216,12 +226,20 @@ def clone_repository(url: str, destino: Path):
 
 if __name__ == "__main__":
     try:
+        if token is None:
+            print("Warning: GITHUB_TOKEN not set. You may hit API rate limits.")
+
         popular_repos = get_popular_repositories_java(1000)
         collect_and_save_repo_info(popular_repos)
-        destino = Path(r"C:\Users\Lucas\Desktop\lab-experimentacao-02\repositories")
-        
+
+        destino = REPOSITORIES_DIR
+
         for repo in popular_repos:
-            clone_repository(get_repository_url(repo), destino)
-            run_ck_on_repo(repo["name"])
+            repo_url = get_repository_url(repo)
+            if repo_url:
+                clone_repository(repo_url, destino)
+                run_ck_on_repo(repo["name"])
+            else:
+                print(f"Skipping repo with no URL: {repo}")
     except Exception as e:
         print(f"Error fetching popular repositories: {e}")
