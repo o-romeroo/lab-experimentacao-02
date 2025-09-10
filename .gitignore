@@ -1,0 +1,61 @@
+# General
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+ENV/
+venv.bak/
+pip-wheel-metadata/
+pip-log.txt
+.pytest_cache/
+
+# dotenv / credentials
+.env
+.env.*
+secrets.yml
+
+# Virtual environments
+/.venv
+/.env
+
+# Editor directories and files
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln
+*.swp
+
+# Jupyter
+.ipynb_checkpoints
+
+# Logs
+*.log
+
+# OS generated
+ehthumbs.db
+Icon?
+
+# Maven / Java build artifacts
+/ck/target/
+/target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Ignore local dependency caches
+.m2/
+
+# Optional: local python env file
+.python-version
+
