@@ -6,18 +6,61 @@ import time
 from pathlib import Path
 import subprocess
 import os
+import shutil
+from extract_metrics import processar_ck_results_repo, gerar_metrics_totais_finais, exibir_resumo_final
+import stat
+import tempfile
+import os
 
+def remove_readonly(func, path, _):
+    """Remove sinalizador de somente leitura e tenta excluir novamente (para arquivos Git do Windows)"""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+def safe_remove_repository(repo_path):
+    """Remove repositório de forma segura, lidando com arquivos somente leitura"""
+    try:
+        shutil.rmtree(repo_path, onerror=remove_readonly)
+        print(f"Repositório {repo_path.name} removido para liberar espaço")
+        return True
+    except Exception as clean_error:
+        print(f"AVISO: Erro ao remover {repo_path.name}: {clean_error}")
+        
+        try:
+            for root, dirs, files in os.walk(repo_path):
+                for dir in dirs:
+                    os.chmod(os.path.join(root, dir), stat.S_IWRITE)
+                for file in files:
+                    os.chmod(os.path.join(root, file), stat.S_IWRITE)
+            shutil.rmtree(repo_path, ignore_errors=True)
+            print(f"Repositório {repo_path.name} removido com força bruta")
+            return True
+        except:
+            pass
+        
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                result = subprocess.run([
+                    'robocopy', temp_dir, str(repo_path), '/MIR', '/NFL', '/NDL', '/NJS'
+                ], capture_output=True, text=True)
+                if result.returncode < 8:
+                    os.rmdir(repo_path)
+                    print(f"Repositório {repo_path.name} removido via robocopy")
+                    return True
+        except Exception as e:
+            print(f"AVISO: Robocopy também falhou: {e}")
+        
+        print(f"ERRO: Não foi possível remover {repo_path.name} - continuando...")
+        return False
 
 load_dotenv()
 
 token = os.getenv("GITHUB_TOKEN")
-
-# Project-relative paths with environment-variable overrides for portability
-BASE_DIR = Path(__file__).resolve().parent
-CK_JAR = Path(os.getenv("CK_JAR", BASE_DIR / "ck" / "target" / "ck-0.7.1-SNAPSHOT-jar-with-dependencies.jar"))
-REPOSITORIES_DIR = Path(os.getenv("REPOSITORIES_DIR", BASE_DIR / "repositories"))
-RESULTS_DIR = Path(os.getenv("RESULTS_DIR", BASE_DIR / "results"))
-DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
+path_repositories = os.getenv("PATH_REPOSITORIES")  # e.g., r"C:\path\to\repositories"
+path_ck_jar = os.getenv("PATH_CK_JAR")  # e.g., r"C:\path\to\ck.jar"
+path_output_ck = os.getenv("PATH_OUTPUT_CK")  # e.g., r"C:\path\to\output"
+path_results_metrics = os.getenv("PATH_RESULTS_METRICS")  # e.g., r"C:\path\to\results"
+java_path = os.getenv("JAVA_PATH")  # e.g., r"C:\Program Files\Java\jdk-24\bin\java.exe"
 
 def get_popular_repositories_java(num_repos):
     """
@@ -39,7 +82,6 @@ def get_popular_repositories_java(num_repos):
     all_repos = []
     per_page = 100
     for page in range(1, (num_repos // per_page) + 2):
-        # filtro de linguagem Java
         url = (
             f"https://api.github.com/search/repositories"
             f"?q=language:Java+stars:>0&sort=stars&order=desc"
@@ -177,32 +219,54 @@ def collect_and_save_repo_info(repos):
         })
         time.sleep(3)
     df = pd.DataFrame(rows)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = DATA_DIR / "repository_data.xlsx"
-    df.to_excel(out_path, index=False)
+    df.to_excel("data/repository_data.xlsx", index=False)
     
-def run_ck_on_repo(repo_name):
-    repo_dir = REPOSITORIES_DIR / repo_name
-    out_dir = RESULTS_DIR
+def run_ck_on_repo(jar_path, repo_dir, out_dir):
+    """Executa CK em um repositório específico"""
+    
     out_dir.mkdir(parents=True, exist_ok=True)
+    
+    java_files = list(repo_dir.rglob("*.java"))
+    if not java_files:
+        print(f"AVISO: Nenhum arquivo .java encontrado em: {repo_dir.name}")
+        return False
 
-    if not CK_JAR.exists():
-        raise FileNotFoundError(f"CK jar not found at {CK_JAR}. Set CK_JAR environment variable to the jar location.")
-
+    print(f"Executando CK em {repo_dir.name} ({len(java_files)} arquivos Java)")
+    original_cwd = os.getcwd()
+    
     cmd = [
-        "java", "-Xmx4g", "-jar", str(CK_JAR),
+        java_path, "-Xmx4g", "-jar", str(jar_path),
         str(repo_dir),
-        "true",
-        "true",
-        str(out_dir)
+        "true",  
+        "0",
+        "true"
     ]
-
-    subprocess.check_call(cmd, cwd=str(repo_dir.parent))
+    
+    try:
+        os.chdir(str(out_dir))
+        subprocess.check_call(cmd)
+        print(f"Análise CK concluída para {repo_dir.name}")
+        
+        csv_files = list(out_dir.glob("*.csv"))
+        if csv_files:
+            print(f"Arquivos gerados: {len(csv_files)} CSVs")
+            return True
+        else:
+            print(f"AVISO: Nenhum arquivo CSV foi gerado para {repo_dir.name}")
+            return False
+            
+    except subprocess.CalledProcessError as e:
+        print(f"ERRO: Erro ao analisar {repo_dir.name}: {e}")
+        return False
+    finally:
+        os.chdir(original_cwd)
     
 
 def clone_repository(url: str, destino: Path):
     """
-    Clona o repositório Git a partir da URL na pasta de destino especificada.
+    Clona o repositório Git usando shallow clone para otimizar velocidade e espaço.
+    
+    Usa --depth 1 --single-branch para baixar apenas o último commit da branch padrão.
 
     Parâmetros:
     - url (str): URL HTTPS do repositório no GitHub.
@@ -212,34 +276,143 @@ def clone_repository(url: str, destino: Path):
     repo_path = destino / repo_name
 
     if repo_path.exists():
-        print(f"Repositório '{repo_name}' já existe em {repo_path}, pulando clone.")
+        print(f"Repositório '{repo_name}' já existe, pulando clone.")
         return
 
     destino.mkdir(parents=True, exist_ok=True)
 
-    print(f"Clonando {url} em {repo_path} ...")
-    subprocess.run(["git", "clone", url, str(repo_path)], check=True)
-    print(f"Repositório clonado: {repo_path}")
+    print(f"Clonando {repo_name} (shallow clone)...")
+    try:
+        # Shallow clone otimizado - apenas último commit da branch padrão
+        subprocess.run([
+            "git", "clone", 
+            "--depth", "1",           # Apenas último commit
+            "--single-branch",        # Apenas branch padrão  
+            url, 
+            str(repo_path)
+        ], check=True, capture_output=True, text=True)
+        print(f"Repositório clonado: {repo_name}")
+        
+    except subprocess.CalledProcessError as e:
+        print(f"ERRO: Erro ao clonar {repo_name}: {e.stderr}")
+        try:
+            print(f"Tentando clone tradicional para {repo_name}...")
+            subprocess.run(["git", "clone", url, str(repo_path)], check=True)
+            print(f"Clone tradicional bem-sucedido: {repo_name}")
+        except subprocess.CalledProcessError as e2:
+            print(f"ERRO: Clone tradicional também falhou para {repo_name}: {e2}")
+            raise
 
 
+def main():
+    """Função principal que executa o pipeline completo de análise de repositórios Java.
+
+    Executa as seguintes etapas:
+    1. Busca os repositórios Java mais populares do GitHub
+    2. Coleta e salva informações detalhadas dos repositórios em Excel
+    3. Clona cada repositório usando shallow clone para otimização
+    4. Executa análise CK (Code Quality) em cada repositório
+    5. Processa e agrega as métricas de qualidade
+    6. Remove repositórios após processamento para economizar espaço
+    7. Gera relatórios finais consolidados
+
+    Parâmetros:
+    - Nenhum: utiliza variáveis de ambiente configuradas no arquivo .env
+
+    Retorna:
+    - None: função executa o pipeline e salva resultados em arquivos CSV/Excel
+
+    Arremessa:
+    - Exception: se ocorrer erro geral no processamento (capturado e logado)
+
+    Observações:
+    - Processa até 1000 repositórios Java mais populares do GitHub
+    - Usa shallow clone (--depth 1) para otimizar velocidade e espaço em disco  
+    - Implementa tratamento robusto de erros com continuação do processamento
+    - Remove repositórios após cada análise para economizar espaço em disco
+    - Gera estatísticas finais de sucessos e falhas
+    """
+    try:
+        popular_repos = get_popular_repositories_java(1000)  
+        collect_and_save_repo_info(popular_repos)
+        
+        destino = path_repositories
+        destino.mkdir(parents=True, exist_ok=True)
+
+        ck_jar = path_ck_jar
+        out_dir = path_output_ck
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        pasta_saida = path_results_metrics
+        pasta_saida.mkdir(parents=True, exist_ok=True)
+        
+        arquivo_per_repo = pasta_saida / "total_metrics_per_repo.csv"
+        if arquivo_per_repo.exists():
+            arquivo_per_repo.unlink()
+        arquivo_per_repo_xlsx = pasta_saida / "total_metrics_per_repo.xlsx"  
+        if arquivo_per_repo_xlsx.exists():
+            arquivo_per_repo_xlsx.unlink()
+        
+        print(f"\n{'='*50}")
+        print("Iniciando análise CK dos repositórios...")
+        print(f"{'='*50}")
+        
+        successful_analyses = 0
+        failed_analyses = 0
+        
+        for i, repo in enumerate(popular_repos, 1):
+            repo_name = repo["name"]
+            repo_path = destino / repo_name
+            print(f"\nProcessando {i}/{len(popular_repos)}: {repo_name}")
+            
+            try:
+                clone_repository(get_repository_url(repo), destino)
+                
+                if repo_path.exists():
+                    ck_success = run_ck_on_repo(ck_jar, repo_path, out_dir)
+                    
+                    if ck_success:
+                        processar_ck_results_repo(repo_name, out_dir, pasta_saida)
+                        successful_analyses += 1
+                        print(f"Repositório {repo_name} processado e adicionado ao total")
+                    else:
+                        failed_analyses += 1
+                        print(f"ERRO: Falha ao processar {repo_name}")
+                        
+                    safe_remove_repository(repo_path)
+                        
+                else:
+                    print(f"AVISO: Repositório não encontrado: {repo_path}")
+                    failed_analyses += 1
+                    
+            except Exception as e:
+                print(f"ERRO: Erro ao processar {repo_name}: {e}")
+                print(f"Pulando {repo_name} e continuando com próximo repositório...")
+                failed_analyses += 1
+                
+                if repo_path.exists():
+                    safe_remove_repository(repo_path)
+                continue
+        
+        print(f"\n{'='*50}")
+        print("Gerando métricas totais finais...")
+        print(f"{'='*50}")
+        
+        df_per_repo_sorted = gerar_metrics_totais_finais(pasta_saida)
+        if df_per_repo_sorted is not None:
+            exibir_resumo_final(df_per_repo_sorted)
+        
+        print(f"\n{'='*50}")
+        print("Processamento COMPLETO!")
+        print(f"Análises bem-sucedidas: {successful_analyses}")
+        print(f"ERRO: Falhas na análise: {failed_analyses}")
+        print(f"Resultados CK salvos em: {out_dir}")
+        print(f"Métricas salvas em: {pasta_saida}")
+        print(f"{'='*50}")
+        
+    except Exception as e:
+        print(f"ERRO: Erro geral: {e}")
 
 
 if __name__ == "__main__":
-    try:
-        if token is None:
-            print("Warning: GITHUB_TOKEN not set. You may hit API rate limits.")
-
-        popular_repos = get_popular_repositories_java(1000)
-        collect_and_save_repo_info(popular_repos)
-
-        destino = REPOSITORIES_DIR
-
-        for repo in popular_repos:
-            repo_url = get_repository_url(repo)
-            if repo_url:
-                clone_repository(repo_url, destino)
-                run_ck_on_repo(repo["name"])
-            else:
-                print(f"Skipping repo with no URL: {repo}")
-    except Exception as e:
-        print(f"Error fetching popular repositories: {e}")
+    main()
