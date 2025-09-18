@@ -51,7 +51,7 @@ O processo de desenvolvimento deste laboratório foi dividido em duas entregas:
 [](https://github.com/o-romeroo/lab-experimentacao-02/tree/main#relatório-final)
 O resultado completo do estudo, incluindo estatísticas descritivas, testes de correlação (Spearman/Pearson) e hipóteses discutidas, está consolidado no relatório final disponível no link abaixo:
 
-[Relatório Final](https://github.com/o-romeroo/lab-experimentacao-02/tree/main/docs/RelatórioFinalLab02-VersaoFinal.pdf)
+[Relatório Final](https://github.com/o-romeroo/lab-experimentacao-02/tree/main/docs/RelatorioFinalLab02-VersaoFinal.pdf)
 
 ---
 
